@@ -12,6 +12,16 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -576,8 +586,16 @@ fun daysLabel(wp: Workplace): String {
     return listOf(d, extra).filter { it.isNotBlank() }.joinToString(" · ").ifBlank { "근무일 없음" }
 }
 
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun PlacesScreen(data: AppData, onEdit: (Workplace) -> Unit, onAdd: () -> Unit) {
+    val ctx = LocalContext.current
+    val haptic = LocalHapticFeedback.current
+    var menuFor by remember { mutableStateOf<Workplace?>(null) }
+    var deleteFor by remember { mutableStateOf<Workplace?>(null) }
+    var reorder by remember { mutableStateOf(false) }
+    BackHandler(enabled = reorder) { reorder = false }
+
     Column(
         Modifier
             .fillMaxSize()
@@ -587,26 +605,41 @@ fun PlacesScreen(data: AppData, onEdit: (Workplace) -> Unit, onAdd: () -> Unit) 
         Spacer(Modifier.height(24.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("직장", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Ink, modifier = Modifier.weight(1f))
-            Box(
-                Modifier
-                    .size(44.dp)
-                    .clip(CircleShape)
-                    .background(Purple)
-                    .clickable(onClick = onAdd),
-                contentAlignment = Alignment.Center,
-            ) { Icon(Icons.Filled.Add, "직장 추가", tint = Color.White) }
+            if (reorder) {
+                SoftButton("완료") { reorder = false }
+            } else {
+                Box(
+                    Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .background(Purple)
+                        .clickable(onClick = onAdd),
+                    contentAlignment = Alignment.Center,
+                ) { Icon(Icons.Filled.Add, "직장 추가", tint = Color.White) }
+            }
         }
-        Text("알바처나 회사를 등록하면 자동으로 출퇴근을 기록해요", color = Sub, fontSize = 14.sp)
+        Text(
+            if (reorder) "화살표로 순서를 바꾸고 '완료'를 눌러 주세요"
+            else "꾹 누르면 복사 · 순서 변경 · 삭제를 할 수 있어요",
+            color = Sub, fontSize = 14.sp,
+        )
         Spacer(Modifier.height(18.dp))
         if (data.workplaces.isEmpty()) EmptyCard("등록된 직장이 없어요", "직장 추가하기", onAdd)
-        data.workplaces.forEach { wp ->
+        data.workplaces.forEachIndexed { i, wp ->
             val sw = swatch(wp.color)
             Row(
                 Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(22.dp))
                     .background(sw.a.copy(alpha = 0.22f))
-                    .clickable { onEdit(wp) }
+                    .combinedClickable(
+                        enabled = !reorder,
+                        onClick = { onEdit(wp) },
+                        onLongClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            menuFor = wp
+                        },
+                    )
                     .padding(16.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -629,12 +662,106 @@ fun PlacesScreen(data: AppData, onEdit: (Workplace) -> Unit, onAdd: () -> Unit) 
                         fontWeight = FontWeight.SemiBold,
                     )
                 }
-                Icon(Icons.Filled.Edit, "수정", tint = Sub)
+                if (reorder) {
+                    Column {
+                        IconButton({ Work.moveWorkplace(ctx, wp.id, -1) }, enabled = i > 0) {
+                            Icon(Icons.Filled.KeyboardArrowUp, "위로", tint = if (i > 0) Ink else Line)
+                        }
+                        IconButton({ Work.moveWorkplace(ctx, wp.id, 1) }, enabled = i < data.workplaces.size - 1) {
+                            Icon(
+                                Icons.Filled.KeyboardArrowDown, "아래로",
+                                tint = if (i < data.workplaces.size - 1) Ink else Line,
+                            )
+                        }
+                    }
+                } else {
+                    Icon(Icons.Filled.Edit, "수정", tint = Sub)
+                }
             }
             Spacer(Modifier.height(12.dp))
         }
         Spacer(Modifier.height(24.dp))
     }
+
+    menuFor?.let { wp ->
+        ModalBottomSheet(onDismissRequest = { menuFor = null }, containerColor = Color.White) {
+            Column(Modifier.padding(start = 20.dp, end = 20.dp, bottom = 28.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Buddy(swatch(wp.color).b, wp.color, Modifier.size(40.dp))
+                    Column(Modifier.padding(start = 12.dp)) {
+                        Text(wp.name, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Ink)
+                        Text("${wp.start} ~ ${wp.end} · ${daysLabel(wp)}", fontSize = 13.sp, color = Sub)
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+                MenuRow(Icons.Filled.Add, "복사하기", "같은 곳, 다른 시간대 일을 만들 때 편해요") {
+                    menuFor = null
+                    val copy = Work.copyWorkplace(ctx, wp.id)
+                    if (copy != null) {
+                        toast(ctx, "복사했어요. 시간과 날짜를 바꿔 저장하세요")
+                        onEdit(copy)
+                    }
+                }
+                MenuRow(Icons.AutoMirrored.Filled.List, "순서 변경", "홈과 목록에 보이는 순서를 바꿔요") {
+                    menuFor = null
+                    reorder = true
+                }
+                MenuRow(Icons.Filled.Delete, "삭제하기", "이 직장과 출퇴근 기록을 지워요", color = Coral) {
+                    menuFor = null
+                    deleteFor = wp
+                }
+            }
+        }
+    }
+
+    deleteFor?.let { wp ->
+        DeleteDialog(wp, onDismiss = { deleteFor = null }) {
+            Work.deleteWorkplace(ctx, wp.id)
+            deleteFor = null
+        }
+    }
+}
+
+@Composable
+fun MenuRow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    desc: String,
+    color: Color = Ink,
+    onClick: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 12.dp, horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .size(42.dp)
+                .clip(CircleShape)
+                .background(if (color == Coral) Color(0xFFFFE9E3) else Lavender),
+            contentAlignment = Alignment.Center,
+        ) { Icon(icon, null, tint = if (color == Coral) Coral else Purple) }
+        Column(Modifier.padding(start = 14.dp)) {
+            Text(title, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = color)
+            Text(desc, fontSize = 12.sp, color = Sub)
+        }
+    }
+}
+
+@Composable
+fun DeleteDialog(wp: Workplace, onDismiss: () -> Unit, onConfirm: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Color.White,
+        title = { Text("${wp.name} 삭제") },
+        text = { Text("이 직장의 출퇴근 기록도 모두 지워져요. 삭제할까요?") },
+        confirmButton = { TextButton(onConfirm) { Text("삭제", color = Coral, fontWeight = FontWeight.Bold) } },
+        dismissButton = { TextButton(onDismiss) { Text("취소", color = Sub) } },
+    )
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -879,31 +1006,11 @@ fun PlaceEditor(initial: Workplace, data: AppData, onClose: () -> Unit, onCalc: 
     }
 
     if (confirmDelete) {
-        AlertDialog(
-            onDismissRequest = { confirmDelete = false },
-            containerColor = Color.White,
-            title = { Text("${initial.name} 삭제") },
-            text = { Text("이 직장의 출퇴근 기록도 모두 지워져요. 삭제할까요?") },
-            confirmButton = {
-                TextButton({
-                    val id = initial.id
-                    Repo.update(ctx) { d ->
-                        d.copy(
-                            workplaces = d.workplaces.filterNot { it.id == id },
-                            records = d.records.filterNot { it.wpId == id },
-                            pendingExit = d.pendingExit - id,
-                        )
-                    }
-                    Alarms.cancelFor(ctx, id)
-                    Alarms.cancelExitConfirm(ctx, id)
-                    Notifier.cancel(ctx, id, Notifier.T_ARRIVE, Notifier.T_COUNT, Notifier.T_END, Notifier.T_OVER, Notifier.T_INFO)
-                    Geo.registerAll(ctx)
-                    confirmDelete = false
-                    onClose()
-                }) { Text("삭제", color = Coral, fontWeight = FontWeight.Bold) }
-            },
-            dismissButton = { TextButton({ confirmDelete = false }) { Text("취소", color = Sub) } },
-        )
+        DeleteDialog(initial, onDismiss = { confirmDelete = false }) {
+            Work.deleteWorkplace(ctx, initial.id)
+            confirmDelete = false
+            onClose()
+        }
     }
 }
 

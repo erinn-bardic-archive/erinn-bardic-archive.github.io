@@ -1,6 +1,7 @@
 package com.worklog.app
 
 import android.content.Context
+import android.location.Location
 import java.time.LocalDate
 
 /** 출퇴근 규칙: 지오펜스·알람·알림 버튼이 모두 여기로 모인다 */
@@ -27,6 +28,7 @@ object Work {
             return
         }
         if (d.activeRecord(wpId) != null) return
+        if (!bestAtSamePlace(d, wp, at)) return
         val date = wp.shiftDateFor(at).toString()
         val rec = d.record(wpId, date)
         if (rec.end != null) return
@@ -68,6 +70,65 @@ object Work {
             Notifier.cancel(ctx, wpId, Notifier.T_ARRIVE, Notifier.T_END)
             if (rec?.end != null) Notifier.info(ctx, wp, "직장을 떠났어요 (${fmtTime(at)})")
         }
+    }
+
+    fun copyWorkplace(ctx: Context, wpId: String): Workplace? {
+        val src = Repo.get(ctx).wp(wpId) ?: return null
+        val copy = src.copy(id = newId(), name = "${src.name} (복사)")
+        Repo.update(ctx) { d ->
+            val i = d.workplaces.indexOfFirst { it.id == wpId }
+            val list = d.workplaces.toMutableList().apply { add(if (i < 0) size else i + 1, copy) }
+            d.copy(workplaces = list)
+        }
+        Geo.registerAll(ctx)
+        Alarms.scheduleFor(ctx, copy)
+        return copy
+    }
+
+    fun moveWorkplace(ctx: Context, wpId: String, delta: Int) {
+        Repo.update(ctx) { d ->
+            val i = d.workplaces.indexOfFirst { it.id == wpId }
+            val j = i + delta
+            if (i < 0 || j !in d.workplaces.indices) return@update d
+            val list = d.workplaces.toMutableList()
+            list[i] = list[j].also { list[j] = list[i] }
+            d.copy(workplaces = list)
+        }
+    }
+
+    fun deleteWorkplace(ctx: Context, wpId: String) {
+        Repo.update(ctx) { d ->
+            d.copy(
+                workplaces = d.workplaces.filterNot { it.id == wpId },
+                records = d.records.filterNot { it.wpId == wpId },
+                pendingExit = d.pendingExit - wpId,
+            )
+        }
+        Alarms.cancelFor(ctx, wpId)
+        Alarms.cancelExitConfirm(ctx, wpId)
+        Notifier.cancel(ctx, wpId, Notifier.T_ARRIVE, Notifier.T_COUNT, Notifier.T_END, Notifier.T_OVER, Notifier.T_INFO)
+        Geo.registerAll(ctx)
+    }
+
+    /**
+     * 같은 장소에 직장이 여러 개면(복사한 시간대별 일) 지금 시각과 출근 시간이 가장 가까운
+     * 근무일 직장 하나만 도착 알림을 띄운다.
+     */
+    private fun bestAtSamePlace(d: AppData, wp: Workplace, at: Long): Boolean {
+        val lat = wp.lat ?: return true
+        val lng = wp.lng ?: return true
+        val dist = FloatArray(1)
+        val group = d.workplaces.filter { o ->
+            o.lat != null && o.lng != null &&
+                run { Location.distanceBetween(lat, lng, o.lat, o.lng, dist); dist[0] < 50f }
+        }
+        if (group.size <= 1) return true
+        fun score(o: Workplace): Long {
+            val day = o.shiftDateFor(at)
+            if (!o.isWorkday(day)) return Long.MAX_VALUE
+            return kotlin.math.abs(at - millisAt(day, hm(o.start)))
+        }
+        return group.minByOrNull { score(it) }?.id == wp.id
     }
 
     fun markArrive(ctx: Context, wpId: String, at: Long = System.currentTimeMillis()) {
