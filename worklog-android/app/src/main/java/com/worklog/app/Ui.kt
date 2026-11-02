@@ -462,20 +462,42 @@ fun HomeScreen(data: AppData, now: Long, onSettings: () -> Unit, onAdd: () -> Un
     }
 }
 
-@Composable
-fun HeroCard(data: AppData, now: Long) {
-    val active = data.workplaces.firstNotNullOfOrNull { wp -> data.activeRecord(wp.id)?.let { wp to it } }
-    val ym = YearMonth.from(dateOf(now))
-    val monthRecs = data.records.filter {
+data class MonthStat(val wp: Workplace, val days: Int, val minutes: Long, val pay: Double)
+
+/** 한 달 동안 직장별 출근일 수, 근무시간, 기록 기준 급여 */
+fun monthStats(d: AppData, ym: YearMonth): List<MonthStat> {
+    val recs = d.records.filter {
         it.start != null && runCatching { YearMonth.from(LocalDate.parse(it.date)) == ym }.getOrDefault(false)
     }
-    val days = monthRecs.map { it.date }.distinct().size
-    val pay = monthRecs.sumOf { r -> data.wp(r.wpId)?.let { r.pay(it) } ?: 0.0 }
+    return d.workplaces.mapNotNull { wp ->
+        val mine = recs.filter { it.wpId == wp.id }
+        if (mine.isEmpty()) return@mapNotNull null
+        MonthStat(
+            wp,
+            mine.map { it.date }.distinct().size,
+            mine.sumOf { it.paidMin(wp) ?: 0L },
+            mine.sumOf { it.pay(wp) ?: 0.0 },
+        )
+    }
+}
+
+fun monthDays(d: AppData, ym: YearMonth): Int = d.records
+    .filter { it.start != null && runCatching { YearMonth.from(LocalDate.parse(it.date)) == ym }.getOrDefault(false) }
+    .map { it.date }.distinct().size
+
+@Composable
+fun HeroCard(data: AppData, now: Long) {
+    var showMonths by remember { mutableStateOf(false) }
+    val active = data.workplaces.firstNotNullOfOrNull { wp -> data.activeRecord(wp.id)?.let { wp to it } }
+    val ym = YearMonth.from(dateOf(now))
+    val days = monthDays(data, ym)
+    val pay = monthStats(data, ym).sumOf { it.pay }
     Row(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(26.dp))
             .background(Brush.linearGradient(listOf(HeroA, HeroB)))
+            .clickable { showMonths = true }
             .padding(18.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -485,17 +507,104 @@ fun HeroCard(data: AppData, now: Long) {
             modifier = Modifier.size(92.dp),
         )
         Spacer(Modifier.width(14.dp))
-        Column {
+        Column(Modifier.weight(1f)) {
             Text(
-                if (active != null) "${active.first.name}에서\n열일 중이에요!" else "오늘도\n잘하고 있어요!",
+                "이번 달 ${days}일 출근\n약 ${won(pay)}",
                 color = PurpleDeep, fontSize = 21.sp, lineHeight = 28.sp, fontWeight = FontWeight.Bold,
             )
             Spacer(Modifier.height(6.dp))
             Text(
-                if (active != null) "${fmtDur((now - active.second.start!!) / 60_000)}째 근무 중"
-                else "이번 달 ${days}일 출근 · 약 ${won(pay)}",
+                if (active != null) "${active.first.name}에서 ${fmtDur((now - active.second.start!!) / 60_000)}째 열일 중!"
+                else "오늘도 잘하고 있어요!",
                 color = Purple, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
             )
+            Text("눌러서 지난달 보기 ›", color = Purple.copy(alpha = 0.7f), fontSize = 11.sp, modifier = Modifier.padding(top = 2.dp))
+        }
+    }
+    if (showMonths) MonthSummaryDialog(data, YearMonth.from(dateOf(now)).minusMonths(1)) { showMonths = false }
+}
+
+@Composable
+fun MonthSummaryDialog(data: AppData, start: YearMonth, onDismiss: () -> Unit) {
+    var month by remember { mutableStateOf(start) }
+    val current = YearMonth.now()
+    val stats = monthStats(data, month)
+    val days = monthDays(data, month)
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(Modifier.fillMaxSize(), color = Color.White) {
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Header("월별 출근 · 급여", onBack = onDismiss)
+                Column(Modifier.padding(horizontal = 20.dp)) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        IconButton({ month = month.minusMonths(1) }) {
+                            Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, "이전 달", tint = Ink)
+                        }
+                        Text(
+                            "${month.year}년 ${month.monthValue}월" + if (month == current) " (이번 달)" else "",
+                            Modifier.weight(1f),
+                            textAlign = TextAlign.Center, fontSize = 17.sp, fontWeight = FontWeight.Bold, color = Ink,
+                        )
+                        IconButton({ month = month.plusMonths(1) }, enabled = month < current) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.KeyboardArrowRight, "다음 달",
+                                tint = if (month < current) Ink else Line,
+                            )
+                        }
+                    }
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(24.dp))
+                            .background(Brush.linearGradient(listOf(HeroA, HeroB)))
+                            .padding(20.dp)
+                    ) {
+                        Text("${month.monthValue}월 출근 ${days}일", color = PurpleDeep, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                        Text(won(stats.sumOf { it.pay }), color = PurpleDeep, fontSize = 30.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            "총 근무 ${fmtDur(stats.sumOf { it.minutes })}",
+                            color = Purple, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                    Label("직장별")
+                    if (stats.isEmpty()) Text("이 달에는 출근 기록이 없어요", color = Sub, fontSize = 14.sp)
+                    stats.forEach { st ->
+                        val sw = swatch(st.wp.color)
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 6.dp)
+                                .clip(RoundedCornerShape(18.dp))
+                                .background(sw.a.copy(alpha = 0.18f))
+                                .padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Buddy(sw.b, st.wp.color, Modifier.size(40.dp))
+                            Column(
+                                Modifier
+                                    .weight(1f)
+                                    .padding(start = 12.dp)
+                            ) {
+                                Text(st.wp.name, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Ink)
+                                Text("${st.days}일 · ${fmtDur(st.minutes)}", fontSize = 13.sp, color = Sub)
+                            }
+                            Text(won(st.pay), fontSize = 15.sp, fontWeight = FontWeight.Bold, color = sw.b)
+                        }
+                    }
+                    Text(
+                        "* 기록된 출근~퇴근 시간 × 시급으로 계산한 금액이에요. 주휴수당, 4대보험·세금 공제는 빠져 있어요.",
+                        fontSize = 12.sp, color = Sub, modifier = Modifier.padding(top = 12.dp, bottom = 30.dp),
+                    )
+                }
+            }
         }
     }
 }
