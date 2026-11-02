@@ -51,6 +51,8 @@ base64 -w0 release.keystore   # 출력값을 SIGNING_KEYSTORE_BASE64 에 저장
 | `SIGNING_KEY_ALIAS` | `chulgeunkok` |
 | `SIGNING_KEY_PASSWORD` | 키 비밀번호 |
 
+비밀번호와 별칭은 영문·숫자로만 만드세요. 빌드할 때 그 밖의 글자(공백, 함께 붙여넣어진 설명 등)는 걸러냅니다.
+
 ## 직접 빌드
 
 Android Studio에서 `worklog-android` 폴더를 열어 실행하거나 `./gradlew assembleRelease` 를 실행하세요.
