@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://erinn-bardic-archive.github.io/sitemap.xml
